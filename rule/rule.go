@@ -730,8 +730,16 @@ type attrValue struct {
 
 // NewRule creates a new, empty rule with the given kind and name.
 func NewRule(kind, name string) *Rule {
+	var call *bzl.CallExpr
 	kindIdent := &bzl.Ident{Name: kind}
-	call := &bzl.CallExpr{X: kindIdent}
+
+	parts := strings.Split(kind, ".")
+	if len(parts) > 1 {
+		call = &bzl.CallExpr{X: createDotExpr(parts)}
+	} else {
+		call = &bzl.CallExpr{X: kindIdent}
+	}
+
 	r := &Rule{
 		stmt:    stmt{expr: call},
 		kind:    kindIdent,
@@ -750,6 +758,37 @@ func NewRule(kind, name string) *Rule {
 		r.attrs["name"] = nameAttr
 	}
 	return r
+}
+
+// Creates *bzl.DotExpr from parts.
+// parts[A, B, C] represents "A.B.C"
+// and gives:
+//
+// &bzl.DotExpr{
+//     Name: C,
+//     X: &bzl.DotExpr{
+//         Name: B,
+//         X: &bzl.Ident {
+//             Name: A
+//         }
+//     }
+// }
+func createDotExpr(parts []string) *bzl.DotExpr {
+	// last `parts` element is the main bzl.DotExpr
+	var dotExpr *bzl.DotExpr = &bzl.DotExpr{Name: parts[len(parts)-1]}
+
+	_pDot := dotExpr
+
+	for idx := len(parts) - 2; idx > 0; idx-- {
+		d := &bzl.DotExpr{Name: parts[idx]}
+		_pDot.X = d
+		_pDot = d
+	}
+
+	// first `parts` element is the identifier
+	_pDot.X = &bzl.Ident{Name: parts[0]}
+
+	return dotExpr
 }
 
 func isNestedDotOrIdent(expr bzl.Expr) bool {
@@ -771,10 +810,11 @@ func ruleFromExpr(index int, expr bzl.Expr) *Rule {
 		return nil
 	}
 
-	kind := call.X
-	if !isNestedDotOrIdent(kind) {
+	if !isNestedDotOrIdent(call.X) {
 		return nil
 	}
+
+	kind := &bzl.Ident{Name: bzl.FormatString(call.X)}
 
 	var args []bzl.Expr
 	attrs := make(map[string]attrValue, len(call.List))
@@ -999,7 +1039,17 @@ func (r *Rule) sync() {
 	}
 
 	call := r.expr.(*bzl.CallExpr)
-	call.X = r.kind
+
+	// update `call.X` (e.g.: "# gazelle:map_kind")
+	parts := strings.Split(r.Kind(), ".")
+	if len(parts) > 1 {
+		call.X = &bzl.DotExpr{
+			Name: strings.Join(parts[1:], "."),
+			X:    &bzl.Ident{Name: parts[0]},
+		}
+	} else {
+		call.X = &bzl.Ident{Name: r.Kind()}
+	}
 
 	if len(r.attrs) > 1 {
 		call.ForceMultiLine = true
